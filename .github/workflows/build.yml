@@ -29,13 +29,17 @@ jobs:
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
         run: |
+          set +x
           mkdir -p work
           curl -sS -f -X POST "$BROKER_URL?action=builder-fetch" -H "x-builder-secret: $BUILDER_SECRET" -H "content-type: application/json" \
             -d "{\"action\":\"builder-fetch\",\"job\":\"$(cat /tmp/jobid)\"}" -o /tmp/job.json
-          jq -r .source /tmp/job.json > work/Tweak.xm
+          K=$(jq -r .key /tmp/job.json); echo "::add-mask::$K"
+          umask 077; printf '%s' "$K" > /tmp/.k
+          jq -r .source /tmp/job.json | base64 -d > /tmp/src.bin
+          node c.mjs dec "$(cat /tmp/jobid)" /tmp/src.bin work/Tweak.xm
           cp builder/Makefile builder/control work/
           chmod -R a+rwX work
-          rm /tmp/job.json
+          rm -f /tmp/job.json /tmp/src.bin
       - name: Build toolchain image
         run: docker build -q -t theos builder/ > /dev/null
       - name: Compile (no network, no secrets, no capabilities)
@@ -48,19 +52,29 @@ jobs:
             -v "$PWD/work:/work" -w /work -e HOME=/tmp theos \
             sh -c 'timeout 300 make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= > /work/build.log 2>&1'
           echo "code=$?" >> "$GITHUB_OUTPUT"
-      - name: Report
+      - name: Encrypt and report
         env:
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
         run: |
+          set +x
+          J=$(cat /tmp/jobid)
           D=work/.theos/obj/Tweak.dylib; [ -f "$D" ] || D=work/.theos/obj/arm64/Tweak.dylib
           if [ -f "$D" ] && [ "${{ steps.compile.outputs.code }}" = "0" ]; then
-            file "$D" | head -c 300 > /tmp/info.txt || true
-            curl -sS -f -X POST "$BROKER_URL?action=builder-done&job=$(cat /tmp/jobid)&ok=1" -H "x-builder-secret: $BUILDER_SECRET" \
-              -H "content-type: application/octet-stream" --data-binary @"$D"
+            node c.mjs enc "$J" "$D" /tmp/out.enc out
+            curl -sS -f -X POST "$BROKER_URL?action=builder-done&job=$J&ok=1" -H "x-builder-secret: $BUILDER_SECRET" \
+              -H "content-type: application/octet-stream" --data-binary @/tmp/out.enc
           else
-            tail -c 3000 work/build.log 2>/dev/null > /tmp/log.txt || echo "no log" > /tmp/log.txt
-            curl -sS -f -X POST "$BROKER_URL?action=builder-done&job=$(cat /tmp/jobid)&ok=0" -H "x-builder-secret: $BUILDER_SECRET" \
-              -H "content-type: text/plain" --data-binary @/tmp/log.txt
+            tail -c 2000 work/build.log 2>/dev/null | grep -E "error|Error" | head -c 1500 > /tmp/log.txt || true
+            [ -s /tmp/log.txt ] || echo "compile failed" > /tmp/log.txt
+            node c.mjs enc "$J" /tmp/log.txt /tmp/log.enc err
+            curl -sS -f -X POST "$BROKER_URL?action=builder-done&job=$J&ok=0" -H "x-builder-secret: $BUILDER_SECRET" \
+              -H "content-type: application/octet-stream" --data-binary @/tmp/log.enc
+            shred -u /tmp/.k 2>/dev/null || true
             exit 1
           fi
+      - name: Cleanup
+        if: always()
+        run: |
+          shred -u /tmp/.k /tmp/out.enc /tmp/log.enc /tmp/log.txt /tmp/src.bin 2>/dev/null || true
+          rm -rf work
