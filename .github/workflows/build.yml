@@ -1,0 +1,66 @@
+name: compile
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: opaque id
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: compile
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check id
+        env:
+          JOB: ${{ inputs.job }}
+        run: |
+          [[ "$JOB" =~ ^[0-9a-f]{32}$ ]] || { echo bad job id; exit 1; }
+          echo "$JOB" > /tmp/jobid
+      - name: Fetch (one use)
+        env:
+          BROKER_URL: ${{ secrets.BROKER_URL }}
+          BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
+        run: |
+          mkdir -p work
+          curl -sS -f -X POST "$BROKER_URL?action=builder-fetch" -H "x-builder-secret: $BUILDER_SECRET" -H "content-type: application/json" \
+            -d "{\"action\":\"builder-fetch\",\"job\":\"$(cat /tmp/jobid)\"}" -o /tmp/job.json
+          jq -r .source /tmp/job.json > work/Tweak.xm
+          cp builder/Makefile builder/control work/
+          chmod -R a+rwX work
+          rm /tmp/job.json
+      - name: Build toolchain image
+        run: docker build -q -t theos builder/ > /dev/null
+      - name: Compile (no network, no secrets, no capabilities)
+        id: compile
+        continue-on-error: true
+        run: |
+          set +e
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only \
+            --tmpfs /tmp:rw,size=256m --memory 2g --cpus 2 --pids-limit 256 --user 1001:1001 \
+            -v "$PWD/work:/work" -w /work -e HOME=/tmp theos \
+            sh -c 'timeout 300 make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= > /work/build.log 2>&1'
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - name: Report
+        env:
+          BROKER_URL: ${{ secrets.BROKER_URL }}
+          BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
+        run: |
+          D=work/.theos/obj/Tweak.dylib; [ -f "$D" ] || D=work/.theos/obj/arm64/Tweak.dylib
+          if [ -f "$D" ] && [ "${{ steps.compile.outputs.code }}" = "0" ]; then
+            file "$D" | head -c 300 > /tmp/info.txt || true
+            curl -sS -f -X POST "$BROKER_URL?action=builder-done&job=$(cat /tmp/jobid)&ok=1" -H "x-builder-secret: $BUILDER_SECRET" \
+              -H "content-type: application/octet-stream" --data-binary @"$D"
+          else
+            tail -c 3000 work/build.log 2>/dev/null > /tmp/log.txt || echo "no log" > /tmp/log.txt
+            curl -sS -f -X POST "$BROKER_URL?action=builder-done&job=$(cat /tmp/jobid)&ok=0" -H "x-builder-secret: $BUILDER_SECRET" \
+              -H "content-type: text/plain" --data-binary @/tmp/log.txt
+            exit 1
+          fi

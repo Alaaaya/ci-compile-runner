@@ -1,0 +1,8 @@
+Package: ci.generic.tweak
+Name: Tweak
+Version: 1.0
+Architecture: iphoneos-arm
+Description: generic
+Maintainer: ci
+Author: ci
+Section: Tweaks
