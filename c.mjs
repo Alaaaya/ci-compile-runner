@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 const [mode, job, inp, out] = process.argv.slice(2);
 const master = Buffer.from(readFileSync("/tmp/.k", "utf8").trim(), "base64");
-const purpose = mode === "dec" ? "src" : (process.argv[5] || "out");
+const purpose = mode === "dec" ? "src" : (process.argv[6] || "out");
 const key = Buffer.from(hkdfSync("sha256", master, "mirsa-forge-v1", purpose + "|" + job, 32));
 const aad = Buffer.from(purpose + "|" + job + "|v1");
 const data = readFileSync(inp);
