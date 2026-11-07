@@ -37,7 +37,7 @@ jobs:
           umask 077; printf '%s' "$K" > /tmp/.k
           jq -r .source /tmp/job.json | base64 -d > /tmp/src.bin
           node c.mjs dec "$(cat /tmp/jobid)" /tmp/src.bin work/Tweak.xm
-          cp builder/Makefile builder/control work/
+          cp builder/Makefile builder/control builder/Tweak.plist work/
           chmod -R a+rwX work
           rm -f /tmp/job.json /tmp/src.bin
       - name: Build toolchain image
