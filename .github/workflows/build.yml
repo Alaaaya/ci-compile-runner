@@ -25,6 +25,7 @@ jobs:
           [[ "$JOB" =~ ^[0-9a-f]{32}$ ]] || { echo bad job id; exit 1; }
           echo "$JOB" > /tmp/jobid
       - name: Fetch (one use)
+        id: fetch
         env:
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
@@ -53,6 +54,8 @@ jobs:
             sh -c 'timeout 300 make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= > /work/build.log 2>&1'
           echo "code=$?" >> "$GITHUB_OUTPUT"
       - name: Encrypt and report
+        # Report toolchain failures too, but never report an unclaimed job.
+        if: ${{ always() && steps.fetch.outcome == 'success' }}
         env:
           BROKER_URL: ${{ secrets.BROKER_URL }}
           BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
